@@ -16,12 +16,11 @@ DEFAULT_QUEUED_MAX_MESSAGE_KBYTES = 50000
 DEFAULT_QUEUED_MIN_MESSAGES = 10000
 
 
+@six.add_metaclass(abc.ABCMeta)
 class AbstractBatchWorker(object):
     """The `BatchingKafkaConsumer` requires an instance of this class to
     handle user provided work such as processing raw messages and flushing
     processed batches to a custom backend."""
-
-    __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
     def process_message(self, message):
