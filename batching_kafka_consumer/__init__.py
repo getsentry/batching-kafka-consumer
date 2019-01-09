@@ -100,6 +100,7 @@ class BatchingKafkaConsumer(object):
 
         self.shutdown = False
         self.batch = []
+        self.uncommitted_messages = False
         self.timer = None
 
         if not isinstance(topics, (list, tuple)):
@@ -185,6 +186,8 @@ class BatchingKafkaConsumer(object):
         self.shutdown = True
 
     def _handle_message(self, msg):
+        self.uncommitted_messages = True
+
         # start the timer only after the first message for this batch is seen
         if not self.timer:
             self.timer = self.max_batch_time / 1000.0 + time.time()
@@ -226,6 +229,7 @@ class BatchingKafkaConsumer(object):
 
     def _reset_batch(self):
         logger.debug("Resetting in-memory batch")
+        self.uncommitted_messages = False
         self.batch = []
         self.timer = None
 
@@ -233,7 +237,7 @@ class BatchingKafkaConsumer(object):
         """Decides whether the `BatchingKafkaConsumer` should flush because of either
         batch size or time. If so, delegate to the worker, clear the current batch,
         and commit offsets to Kafka."""
-        if len(self.batch) > 0:
+        if self.uncommitted_messages:
             batch_by_size = len(self.batch) >= self.max_batch_size
             batch_by_time = self.timer and time.time() > self.timer
             if (force or batch_by_size or batch_by_time):
@@ -242,13 +246,14 @@ class BatchingKafkaConsumer(object):
                     len(self.batch), force, batch_by_size, batch_by_time
                 )
 
-                logger.debug("Flushing batch via worker")
-                t = time.time()
-                self.worker.flush_batch(self.batch)
-                duration = int((time.time() - t) * 1000)
-                logger.info("Worker flush took %sms", duration)
-                if self.metrics:
-                    self.metrics.timing('batch.flush', duration)
+                if self.batch:
+                    logger.debug("Flushing batch via worker")
+                    t = time.time()
+                    self.worker.flush_batch(self.batch)
+                    duration = int((time.time() - t) * 1000)
+                    logger.info("Worker flush took %sms", duration)
+                    if self.metrics:
+                        self.metrics.timing('batch.flush', duration)
 
                 logger.debug("Committing Kafka offsets")
                 t = time.time()
