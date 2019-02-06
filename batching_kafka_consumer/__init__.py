@@ -85,6 +85,13 @@ class BatchingKafkaConsumer(object):
     # https://github.com/confluentinc/confluent-kafka-python/blob/443177e1c83d9b66ce30f5eb8775e062453a738b/tests/test_enums.py#L22-L25
     LOGICAL_OFFSETS = frozenset([OFFSET_BEGINNING, OFFSET_END, OFFSET_STORED, OFFSET_INVALID])
 
+    # Set of error codes that can be returned by ``consumer.poll`` calls which
+    # are generally able to be recovered from after a series of retries.
+    RECOVERABLE_ERRORS = frozenset([
+        KafkaError._PARTITION_EOF,
+        KafkaError._TRANSPORT,  # Local: Broker transport failure
+    ])
+
     def __init__(self, topics, worker, max_batch_size, max_batch_time, bootstrap_servers,
                  group_id, metrics=None, producer=None, dead_letter_topic=None,
                  commit_log_topic=None, auto_offset_reset='error',
@@ -170,11 +177,10 @@ class BatchingKafkaConsumer(object):
         if msg is None:
             return
         if msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
+            if msg.error().code() in self.RECOVERABLE_ERRORS:
                 return
             else:
-                logger.error(msg.error())
-                return
+                raise Exception(msg.error())
 
         self._handle_message(msg)
 
