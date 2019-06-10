@@ -110,7 +110,10 @@ class BatchingKafkaConsumer(object):
         self.__batch_results  = []
         self.__batch_deadline = None
         self.__batch_messages_processed_count = 0
-        self.__batch_messages_processed_duration_ms = 0.0  # in milliseconds
+        # the total amount of time, in milliseconds, that it took to process
+        # the messages in this batch (does not included time spent waiting for
+        # new messages)
+        self.__batch_processing_time_ms = 0.0
 
         if not isinstance(topics, (list, tuple)):
             topics = [topics]
@@ -224,7 +227,7 @@ class BatchingKafkaConsumer(object):
         finally:
             duration = (time.time() - start) * 1000
             self.__batch_messages_processed_count += 1
-            self.__batch_messages_processed_duration_ms += duration
+            self.__batch_processing_time_ms += duration
             if self.metrics:
                 self.metrics.timing('process_message', duration)
 
@@ -246,7 +249,7 @@ class BatchingKafkaConsumer(object):
         self.__batch_results = []
         self.__batch_deadline = None
         self.__batch_messages_processed_count = 0
-        self.__batch_messages_processed_duration_ms = 0.0
+        self.__batch_processing_time_ms = 0.0
 
     def _flush(self, force=False):
         """Decides whether the `BatchingKafkaConsumer` should flush because of either
@@ -268,7 +271,7 @@ class BatchingKafkaConsumer(object):
         if self.metrics:
             self.metrics.timing(
                 'process_message.normalized',
-                self.__batch_messages_processed_duration_ms / self.__batch_messages_processed_count,
+                self.__batch_processing_time_ms / self.__batch_messages_processed_count,
             )
 
         batch_results_length = len(self.__batch_results)
