@@ -131,7 +131,7 @@ class BatchingKafkaConsumer(object):
         self.commit_log_topic = commit_log_topic
         self.dead_letter_topic = dead_letter_topic
 
-    def __record_timing(self, metric, value, tags=None, sample_rate=None):
+    def __record_timing(self, metric, value, tags=None):
         if self.__metrics is None:
             return
 
@@ -139,7 +139,7 @@ class BatchingKafkaConsumer(object):
             metric,
             value,
             tags=tags,
-            sample_rate=sample_rate if sample_rate is not None else self.__metrics_sample_rates.get(metric, 1),
+            sample_rate=self.__metrics_sample_rates.get(metric, 1),
         )
 
     def create_consumer(self, topics, bootstrap_servers, group_id, auto_offset_reset,
