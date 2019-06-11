@@ -96,13 +96,15 @@ class BatchingKafkaConsumer(object):
                  group_id, metrics=None, producer=None, dead_letter_topic=None,
                  commit_log_topic=None, auto_offset_reset='error',
                  queued_max_messages_kbytes=DEFAULT_QUEUED_MAX_MESSAGE_KBYTES,
-                 queued_min_messages=DEFAULT_QUEUED_MIN_MESSAGES):
+                 queued_min_messages=DEFAULT_QUEUED_MIN_MESSAGES,
+                 metrics_sample_rates=None):
         assert isinstance(worker, AbstractBatchWorker)
         self.worker = worker
 
         self.max_batch_size = max_batch_size
         self.max_batch_time = max_batch_time  # in milliseconds
-        self.metrics = metrics
+        self.__metrics = metrics
+        self.__metrics_sample_rates = metrics_sample_rates if metrics_sample_rates is not None else {}
         self.group_id = group_id
 
         self.shutdown = False
@@ -128,6 +130,17 @@ class BatchingKafkaConsumer(object):
         self.producer = producer
         self.commit_log_topic = commit_log_topic
         self.dead_letter_topic = dead_letter_topic
+
+    def __record_timing(self, metric, value, tags=None, sample_rate=None):
+        if self.__metrics is None:
+            return
+
+        return self.__metrics.timing(
+            metric,
+            value,
+            tags=tags,
+            sample_rate=sample_rate if sample_rate is not None else self.__metrics_sample_rates.get(metric, 1),
+        )
 
     def create_consumer(self, topics, bootstrap_servers, group_id, auto_offset_reset,
             queued_max_messages_kbytes, queued_min_messages):
@@ -228,8 +241,7 @@ class BatchingKafkaConsumer(object):
             duration = (time.time() - start) * 1000
             self.__batch_messages_processed_count += 1
             self.__batch_processing_time_ms += duration
-            if self.metrics:
-                self.metrics.timing('process_message', duration)
+            self.__record_timing('process_message', duration)
 
     def _shutdown(self):
         logger.debug("Stopping")
@@ -268,11 +280,10 @@ class BatchingKafkaConsumer(object):
             len(self.__batch_results), force, batch_by_size, batch_by_time
         )
 
-        if self.metrics:
-            self.metrics.timing(
-                'process_message.normalized',
-                self.__batch_processing_time_ms / self.__batch_messages_processed_count,
-            )
+        self.__record_timing(
+            'process_message.normalized',
+            self.__batch_processing_time_ms / self.__batch_messages_processed_count,
+        )
 
         batch_results_length = len(self.__batch_results)
         if batch_results_length > 0:
@@ -281,9 +292,8 @@ class BatchingKafkaConsumer(object):
             self.worker.flush_batch(self.__batch_results)
             flush_duration = (time.time() - flush_start) * 1000
             logger.info("Worker flush took %dms", flush_duration)
-            if self.metrics:
-                self.metrics.timing('batch.flush', flush_duration)
-                self.metrics.timing('batch.flush.normalized', flush_duration / batch_results_length)
+            self.__record_timing('batch.flush', flush_duration)
+            self.__record_timing('batch.flush.normalized', flush_duration / batch_results_length)
 
         logger.debug("Committing Kafka offsets")
         commit_start = time.time()
