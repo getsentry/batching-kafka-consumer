@@ -96,19 +96,26 @@ class BatchingKafkaConsumer(object):
                  group_id, metrics=None, producer=None, dead_letter_topic=None,
                  commit_log_topic=None, auto_offset_reset='error',
                  queued_max_messages_kbytes=DEFAULT_QUEUED_MAX_MESSAGE_KBYTES,
-                 queued_min_messages=DEFAULT_QUEUED_MIN_MESSAGES):
+                 queued_min_messages=DEFAULT_QUEUED_MIN_MESSAGES,
+                 metrics_sample_rates=None):
         assert isinstance(worker, AbstractBatchWorker)
         self.worker = worker
 
         self.max_batch_size = max_batch_size
-        self.max_batch_time = max_batch_time
-        self.metrics = metrics
+        self.max_batch_time = max_batch_time  # in milliseconds
+        self.__metrics = metrics
+        self.__metrics_sample_rates = metrics_sample_rates if metrics_sample_rates is not None else {}
         self.group_id = group_id
 
         self.shutdown = False
-        self.batch = []
-        self.uncommitted_messages = False
-        self.timer = None
+
+        self.__batch_results  = []
+        self.__batch_deadline = None
+        self.__batch_messages_processed_count = 0
+        # the total amount of time, in milliseconds, that it took to process
+        # the messages in this batch (does not included time spent waiting for
+        # new messages)
+        self.__batch_processing_time_ms = 0.0
 
         if not isinstance(topics, (list, tuple)):
             topics = [topics]
@@ -123,6 +130,17 @@ class BatchingKafkaConsumer(object):
         self.producer = producer
         self.commit_log_topic = commit_log_topic
         self.dead_letter_topic = dead_letter_topic
+
+    def __record_timing(self, metric, value, tags=None):
+        if self.__metrics is None:
+            return
+
+        return self.__metrics.timing(
+            metric,
+            value,
+            tags=tags,
+            sample_rate=self.__metrics_sample_rates.get(metric, 1),
+        )
 
     def create_consumer(self, topics, bootstrap_servers, group_id, auto_offset_reset,
             queued_max_messages_kbytes, queued_min_messages):
@@ -192,11 +210,11 @@ class BatchingKafkaConsumer(object):
         self.shutdown = True
 
     def _handle_message(self, msg):
-        self.uncommitted_messages = True
+        start = time.time()
 
-        # start the timer only after the first message for this batch is seen
-        if not self.timer:
-            self.timer = self.max_batch_time / 1000.0 + time.time()
+        # set the deadline only after the first message for this batch is seen
+        if not self.__batch_deadline:
+            self.__batch_deadline = self.max_batch_time / 1000.0 + start
 
         try:
             result = self.worker.process_message(msg)
@@ -218,7 +236,12 @@ class BatchingKafkaConsumer(object):
                 raise
         else:
             if result is not None:
-                self.batch.append(result)
+                self.__batch_results.append(result)
+        finally:
+            duration = (time.time() - start) * 1000
+            self.__batch_messages_processed_count += 1
+            self.__batch_processing_time_ms += duration
+            self.__record_timing('process_message', duration)
 
     def _shutdown(self):
         logger.debug("Stopping")
@@ -235,39 +258,50 @@ class BatchingKafkaConsumer(object):
 
     def _reset_batch(self):
         logger.debug("Resetting in-memory batch")
-        self.uncommitted_messages = False
-        self.batch = []
-        self.timer = None
+        self.__batch_results = []
+        self.__batch_deadline = None
+        self.__batch_messages_processed_count = 0
+        self.__batch_processing_time_ms = 0.0
 
     def _flush(self, force=False):
         """Decides whether the `BatchingKafkaConsumer` should flush because of either
         batch size or time. If so, delegate to the worker, clear the current batch,
         and commit offsets to Kafka."""
-        if self.uncommitted_messages:
-            batch_by_size = len(self.batch) >= self.max_batch_size
-            batch_by_time = self.timer and time.time() > self.timer
-            if (force or batch_by_size or batch_by_time):
-                logger.info(
-                    "Flushing %s items: forced:%s size:%s time:%s",
-                    len(self.batch), force, batch_by_size, batch_by_time
-                )
+        if not self.__batch_messages_processed_count > 0:
+            return  # No messages were processed, so there's nothing to do.
 
-                if self.batch:
-                    logger.debug("Flushing batch via worker")
-                    t = time.time()
-                    self.worker.flush_batch(self.batch)
-                    duration = int((time.time() - t) * 1000)
-                    logger.info("Worker flush took %sms", duration)
-                    if self.metrics:
-                        self.metrics.timing('batch.flush', duration)
+        batch_by_size = len(self.__batch_results) >= self.max_batch_size
+        batch_by_time = self.__batch_deadline and time.time() > self.__batch_deadline
+        if not (force or batch_by_size or batch_by_time):
+            return
 
-                logger.debug("Committing Kafka offsets")
-                t = time.time()
-                self._commit()
-                duration = int((time.time() - t) * 1000)
-                logger.debug("Kafka offset commit took %sms", duration)
+        logger.info(
+            "Flushing %s items: forced:%s size:%s time:%s",
+            len(self.__batch_results), force, batch_by_size, batch_by_time
+        )
 
-                self._reset_batch()
+        self.__record_timing(
+            'process_message.normalized',
+            self.__batch_processing_time_ms / self.__batch_messages_processed_count,
+        )
+
+        batch_results_length = len(self.__batch_results)
+        if batch_results_length > 0:
+            logger.debug("Flushing batch via worker")
+            flush_start = time.time()
+            self.worker.flush_batch(self.__batch_results)
+            flush_duration = (time.time() - flush_start) * 1000
+            logger.info("Worker flush took %dms", flush_duration)
+            self.__record_timing('batch.flush', flush_duration)
+            self.__record_timing('batch.flush.normalized', flush_duration / batch_results_length)
+
+        logger.debug("Committing Kafka offsets")
+        commit_start = time.time()
+        self._commit()
+        commit_duration = (time.time() - commit_start) * 1000
+        logger.debug("Kafka offset commit took %dms", commit_duration)
+
+        self._reset_batch()
 
     def _commit_message_delivery_callback(self, error, message):
         if error is not None:
