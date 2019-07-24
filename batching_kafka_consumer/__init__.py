@@ -109,7 +109,8 @@ class BatchingKafkaConsumer(object):
 
         self.shutdown = False
 
-        self.__batch_results  = []
+        self.__batch_results = []
+        self.__batch_offsets = {}  # (topic, partition) = [low, high]
         self.__batch_deadline = None
         self.__batch_messages_processed_count = 0
         # the total amount of time, in milliseconds, that it took to process
@@ -243,6 +244,12 @@ class BatchingKafkaConsumer(object):
             self.__batch_processing_time_ms += duration
             self.__record_timing('process_message', duration)
 
+            topic_partition_key = (msg.topic(), msg.partition())
+            if topic_partition_key in self.__batch_offsets:
+                self.__batch_offsets[topic_partition_key][1] = msg.offset()
+            else:
+                self.__batch_offsets[topic_partition_key] = [msg.offset(), msg.offset()]
+
     def _shutdown(self):
         logger.debug("Stopping")
 
@@ -259,6 +266,7 @@ class BatchingKafkaConsumer(object):
     def _reset_batch(self):
         logger.debug("Resetting in-memory batch")
         self.__batch_results = []
+        self.__batch_offsets = {}
         self.__batch_deadline = None
         self.__batch_messages_processed_count = 0
         self.__batch_processing_time_ms = 0.0
@@ -276,8 +284,8 @@ class BatchingKafkaConsumer(object):
             return
 
         logger.info(
-            "Flushing %s items: forced:%s size:%s time:%s",
-            len(self.__batch_results), force, batch_by_size, batch_by_time
+            "Flushing %s items (from %r): forced:%s size:%s time:%s",
+            len(self.__batch_results), self.__batch_offsets, force, batch_by_size, batch_by_time
         )
 
         self.__record_timing(
