@@ -13,7 +13,7 @@ setup(
     packages=find_packages(exclude=("tests", "tests.*")),
     zip_safe=False,
     license="BSD",
-    install_requires=["confluent-kafka==1.5.0"],
+    install_requires=["confluent-kafka==1.5.0", "six==1.16.0"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Environment :: Web Environment",
