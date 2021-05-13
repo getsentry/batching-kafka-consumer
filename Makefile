@@ -6,3 +6,9 @@ release:
 	python setup.py sdist bdist_wheel
 	twine upload dist/*
 
+install:
+	pip install -e .
+	pip install -r test-requirements.txt
+
+test:
+	py.test tests/

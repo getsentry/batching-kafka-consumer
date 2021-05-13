@@ -2,8 +2,8 @@ language: python
 sudo: required
 dist: xenial
 python:
-  - "2.7"
-  - "3.7"
+  - "3.6"
+  - "3.8"
 cache:
   pip: true
 install:
