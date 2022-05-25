@@ -1,3 +1,6 @@
+# Deprecated
+This project is no longer actively maintained.
+
 # batching-kafka-consumer
 
 Code extracted from [Snuba](https://github.com/getsentry/snuba) so it could be re-used in Sentry. For now the best bet for documentation is the docstrings in [__init__.py](https://github.com/getsentry/batching-kafka-consumer/blob/master/batching_kafka_consumer/__init__.py).
